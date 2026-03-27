@@ -5,20 +5,29 @@ Gridengine GPU prolog
 > [kyamagu/sge-gpuprolog](https://github.com/kyamagu/sge-gpuprolog), which has
 > been archived.
 
-Changes from upstream
----------------------
+---
 
-### Memory-aware device selection
+v1.1 — Memory-aware selection & GPU reservation
+------------------------------------------------
 
-GPUs are now sorted by memory usage (ascending) instead of random selection,
-so jobs prefer the least loaded device. GPUs with equal memory usage are
-randomized to avoid hotspots.
+### Problem
 
-### GPU reservation tool
+1. The original random device selection ignores GPU load, causing jobs to land
+   on heavily loaded devices while idle ones sit unused.
+2. When GPUs are manually taken offline (e.g. for maintenance), manually
+   creating lock directories without adjusting SGE resource counts causes
+   prolog failures.
 
-`reserve-gpu.sh` allows manual reservation/release of GPU devices while keeping
-SGE resource counts in sync. This avoids prolog failures when GPUs are
-temporarily taken offline for maintenance or debugging.
+### Approach
+
+1. **Memory-aware selection** — replace `shuf` with `nvidia-smi` memory query.
+   GPUs are sorted by used memory (ascending) so jobs prefer the least loaded
+   device. Equal-usage devices are randomized to avoid hotspots.
+2. **GPU reservation tool** — `reserve-gpu.sh` atomically creates the lock
+   directory AND adjusts the SGE `gpu` resource via `qconf`, keeping both in
+   sync. Rollback on failure.
+
+### Usage
 
     reserve-gpu.sh lock   <gpu_id> [hostname]   # Reserve a GPU
     reserve-gpu.sh unlock <gpu_id> [hostname]   # Release a GPU
@@ -32,6 +41,26 @@ Examples:
     reserve-gpu.sh status              # Show status for this host
 
 ---
+
+Prerequisites
+-------------
+
+SGE prolog exit codes have specific meanings
+([sge_conf(5)](http://gridscheduler.sourceforge.net/htmlman/htmlman5/sge_conf.html)):
+
+    Exit 0:    Success
+    Exit 99:   Reschedule job (automatic, no manual intervention)
+    Exit 100:  Put job in error state (Eqw, requires manual qmod -cj)
+    Other:     Put queue in error state
+
+The prolog uses exit 99 when GPU allocation fails, so the job is
+automatically rescheduled to retry later. Exit 100 is reserved for
+permanent errors (e.g. environment file not writable)
+
+---
+
+v1.0 — Original
+----------------
 
 Scripts to manage NVIDIA GPU devices in SGE 6.2u5.
 

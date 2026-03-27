@@ -55,7 +55,7 @@ then
   for device_id in $SGE_GPU; do
     rmdir /tmp/lock-gpu$device_id
   done
-  exit 100
+  exit 99
 fi
 
 # Set the environment.
