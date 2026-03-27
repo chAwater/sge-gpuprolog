@@ -30,7 +30,11 @@ fi
 # Allocate and lock GPUs.
 SGE_GPU=""
 i=0
-device_ids=$(nvidia-smi -L | cut -f1 -d":" | cut -f2 -d" " | xargs shuf -e)
+# Sort by memory usage (ascending), randomize order among GPUs with equal usage.
+# awk adds a random key per line; sort first by memory (col2), then by random key (col3).
+device_ids=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | \
+             awk -F', ' 'BEGIN{srand()} {print $1","$2","rand()}' | \
+             sort -t',' -k2,2n -k3,3n | cut -d',' -f1)
 for device_id in $device_ids
 do
   lockfile=/tmp/lock-gpu$device_id
