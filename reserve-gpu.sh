@@ -223,11 +223,24 @@ case "$ACTION" in
     done
 
     echo ""
-    echo "Summary: $locked locked, $((total - locked)) available"
 
-    # Warn if SGE resource count does not match actual available GPUs
-    if [ -n "$sge_gpu" ] && [ "$sge_gpu" -ne $((total - locked)) ]; then
-      echo "WARNING: SGE resource ($sge_gpu) does not match available GPUs ($((total - locked)))"
+    # Derive manual vs SGE job locks from existing data:
+    #   manual_locks = total - sge_gpu  (reserve-gpu.sh decrements sge_gpu on each lock)
+    #   sge_job_locks = locked - manual_locks
+    # If either is negative, state is inconsistent.
+    if [ -n "$sge_gpu" ]; then
+      manual_locks=$((total - sge_gpu))
+      sge_job_locks=$((locked - manual_locks))
+
+      echo "Summary: $locked locked ($manual_locks manual, $sge_job_locks SGE jobs), $((total - locked)) available"
+
+      if [ "$manual_locks" -lt 0 ]; then
+        echo "WARNING: SGE gpu resource ($sge_gpu) exceeds physical GPUs ($total)"
+      elif [ "$sge_job_locks" -lt 0 ]; then
+        echo "WARNING: SGE gpu resource ($sge_gpu) too low — expected $manual_locks manual locks but only $locked total locks on disk"
+      fi
+    else
+      echo "Summary: $locked locked, $((total - locked)) available (SGE resource unavailable)"
     fi
     ;;
 
