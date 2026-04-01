@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # reserve-gpu.sh — Manually reserve/release GPU devices.
 #
@@ -35,13 +35,19 @@
 #
 
 ACTION=$1
-GPU_ID=$2
-HOST=${3:-$(hostname)}
+LOCAL_HOST=$(hostname)
 
 # Lock directory prefix — must match prolog.sh and epilog.sh
 LOCK_PREFIX="/tmp/lock-gpu"
 
-LOCAL_HOST=$(hostname)
+# Parse positional args: status uses $2 as hostname, lock/unlock uses $2 as gpu_id.
+if [ "$ACTION" = "status" ]; then
+  GPU_ID=""
+  HOST=${2:-$LOCAL_HOST}
+else
+  GPU_ID=$2
+  HOST=${3:-$LOCAL_HOST}
+fi
 
 usage() {
   echo "Usage:"
@@ -75,7 +81,7 @@ set_sge_gpu() {
 
 # Get total physical GPU count on the target host.
 get_total_gpus() {
-  run_on_host "nvidia-smi -L 2>/dev/null | wc -l | tr -d ' '"
+  run_on_host "nvidia-smi -L 2>/dev/null | wc -l | tr -d ' \r'"
 }
 
 # Validate that gpu_id is a non-negative integer.
@@ -186,9 +192,6 @@ case "$ACTION" in
     ;;
 
   status)
-    # For status, hostname is the 2nd positional arg (where gpu_id normally goes)
-    HOST=${GPU_ID:-$HOST}
-    LOCAL_HOST=$(hostname)  # Refresh after HOST reassignment
     check_remote_access
     total=$(get_total_gpus)
     sge_gpu=$(get_sge_gpu "$HOST")
