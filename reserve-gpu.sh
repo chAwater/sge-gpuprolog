@@ -8,15 +8,17 @@
 #   lock files and SGE gpu resource values in sync.
 #
 # How it works:
-#   - lock:   Creates /tmp/lock-gpu<id> (same lock used by prolog.sh),
-#             then decrements the SGE gpu resource for the host via qconf.
-#   - unlock: Removes the lock directory, then increments the SGE gpu resource.
-#   - status: Scans all GPUs for lock state and compares with SGE resource count.
-#             Warns if they are out of sync.
+#   - lock:   Creates /tmp/lock-gpu<id> on the target host (same lock used by
+#             prolog.sh), then decrements the SGE gpu resource via qconf.
+#   - unlock: Removes the lock directory on the target host, then increments
+#             the SGE gpu resource.
+#   - status: Scans all GPUs on the target host for lock state and compares
+#             with SGE resource count. Warns if they are out of sync.
 #
 # Prerequisites:
 #   - qconf privileges (SGE manager or operator)
-#   - nvidia-smi available on the host
+#   - nvidia-smi available on the target host
+#   - SSH key-based auth for remote hosts (no password prompt)
 #   - Lock path /tmp/lock-gpu<id> must match prolog.sh and epilog.sh
 #
 # Usage:
@@ -26,10 +28,10 @@
 #
 # Examples:
 #   reserve-gpu.sh lock 2              # Reserve GPU 2 on this host
-#   reserve-gpu.sh lock 0 node01       # Reserve GPU 0 on node01
+#   reserve-gpu.sh lock 0 node01       # Reserve GPU 0 on node01 (via SSH)
 #   reserve-gpu.sh unlock 2            # Release GPU 2 on this host
 #   reserve-gpu.sh status              # Show status for this host
-#   reserve-gpu.sh status node01       # Show status for node01
+#   reserve-gpu.sh status node01       # Show status for node01 (via SSH)
 #
 
 ACTION=$1
@@ -39,6 +41,8 @@ HOST=${3:-$(hostname)}
 # Lock directory prefix — must match prolog.sh and epilog.sh
 LOCK_PREFIX="/tmp/lock-gpu"
 
+LOCAL_HOST=$(hostname)
+
 usage() {
   echo "Usage:"
   echo "  $0 lock   <gpu_id> [hostname]  - Reserve a GPU and decrement SGE resource"
@@ -47,41 +51,61 @@ usage() {
   exit 1
 }
 
+# Run a command on the target host.
+# Local: runs directly.  Remote: runs via SSH.
+run_on_host() {
+  if [ "$HOST" = "$LOCAL_HOST" ]; then
+    sh -c "$1"
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$HOST" "$1"
+  fi
+}
+
 # Read current SGE gpu resource value for a host.
-# Args: $1 = hostname
+# Runs locally (qconf talks to qmaster directly).
 get_sge_gpu() {
   qconf -se "$1" 2>/dev/null | sed -n 's/.*gpu=\([0-9]*\).*/\1/p'
 }
 
 # Update SGE gpu resource value for a host.
-# Args: $1 = hostname, $2 = new value
+# Runs locally (qconf talks to qmaster directly).
 set_sge_gpu() {
-  local host=$1
-  local value=$2
-  qconf -mattr exechost complex_values "gpu=$value" "$host"
+  qconf -mattr exechost complex_values "gpu=$2" "$1"
 }
 
-# Get total physical GPU count via nvidia-smi.
+# Get total physical GPU count on the target host.
 get_total_gpus() {
-  nvidia-smi -L 2>/dev/null | wc -l | tr -d ' '
+  run_on_host "nvidia-smi -L 2>/dev/null | wc -l | tr -d ' '"
 }
 
 # Validate that gpu_id is a non-negative integer.
-# Args: $1 = gpu_id
 validate_gpu_id() {
   case "$1" in
     ''|*[!0-9]*) echo "ERROR: gpu_id must be a non-negative integer, got '$1'"; exit 1 ;;
   esac
 }
 
-# Verify that gpu_id exists on this host (within range).
-# Args: $1 = gpu_id
+# Verify that gpu_id exists on the target host (within range).
 check_gpu_exists() {
   local total
   total=$(get_total_gpus)
-  if [ "$1" -ge "$total" ]; then
-    echo "ERROR: GPU $1 does not exist (this host has $total GPUs: 0-$((total - 1)))"
+  if [ -z "$total" ] || [ "$total" -eq 0 ]; then
+    echo "ERROR: Cannot query GPUs on $HOST (nvidia-smi failed or SSH unreachable)"
     exit 1
+  fi
+  if [ "$1" -ge "$total" ]; then
+    echo "ERROR: GPU $1 does not exist ($HOST has $total GPUs: 0-$((total - 1)))"
+    exit 1
+  fi
+}
+
+# Verify SSH connectivity for remote hosts.
+check_remote_access() {
+  if [ "$HOST" != "$LOCAL_HOST" ]; then
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$HOST" "true" 2>/dev/null; then
+      echo "ERROR: Cannot SSH to $HOST (check key-based auth and connectivity)"
+      exit 1
+    fi
   fi
 }
 
@@ -89,12 +113,12 @@ case "$ACTION" in
   lock)
     if [ -z "$GPU_ID" ]; then usage; fi
     validate_gpu_id "$GPU_ID"
+    check_remote_access
     check_gpu_exists "$GPU_ID"
 
-    # Step 1: Create lock directory (atomic via mkdir, same as prolog.sh)
-    lockfile="${LOCK_PREFIX}${GPU_ID}"
-    if ! mkdir "$lockfile" 2>/dev/null; then
-      echo "ERROR: GPU $GPU_ID is already locked ($lockfile exists)"
+    # Step 1: Create lock directory on target host (atomic via mkdir)
+    if ! run_on_host "mkdir '${LOCK_PREFIX}${GPU_ID}' 2>/dev/null"; then
+      echo "ERROR: GPU $GPU_ID is already locked on $HOST"
       exit 1
     fi
 
@@ -116,9 +140,9 @@ case "$ACTION" in
     if set_sge_gpu "$HOST" "$new_val"; then
       echo "Locked GPU $GPU_ID on $HOST (SGE gpu: $current -> $new_val)"
     else
-      # Rollback: remove lock directory to avoid inconsistent state
+      # Rollback: remove lock directory on target host
       echo "ERROR: Failed to update SGE resource, rolling back lock"
-      rmdir "$lockfile"
+      run_on_host "rmdir '${LOCK_PREFIX}${GPU_ID}'" 2>/dev/null
       exit 1
     fi
     ;;
@@ -126,11 +150,11 @@ case "$ACTION" in
   unlock)
     if [ -z "$GPU_ID" ]; then usage; fi
     validate_gpu_id "$GPU_ID"
+    check_remote_access
 
-    # Step 1: Remove lock directory
-    lockfile="${LOCK_PREFIX}${GPU_ID}"
-    if ! rmdir "$lockfile" 2>/dev/null; then
-      echo "ERROR: GPU $GPU_ID is not locked ($lockfile does not exist)"
+    # Step 1: Remove lock directory on target host
+    if ! run_on_host "rmdir '${LOCK_PREFIX}${GPU_ID}' 2>/dev/null"; then
+      echo "ERROR: GPU $GPU_ID is not locked on $HOST"
       exit 1
     fi
 
@@ -164,8 +188,15 @@ case "$ACTION" in
   status)
     # For status, hostname is the 2nd positional arg (where gpu_id normally goes)
     HOST=${GPU_ID:-$HOST}
+    LOCAL_HOST=$(hostname)  # Refresh after HOST reassignment
+    check_remote_access
     total=$(get_total_gpus)
     sge_gpu=$(get_sge_gpu "$HOST")
+
+    if [ -z "$total" ] || [ "$total" -eq 0 ]; then
+      echo "ERROR: Cannot query GPUs on $HOST"
+      exit 1
+    fi
 
     echo "Host: $HOST"
     echo "Physical GPUs: $total"
@@ -173,11 +204,13 @@ case "$ACTION" in
     echo ""
     echo "Lock status:"
 
+    # Query all lock directories in a single remote call
+    locked_ids=$(run_on_host "for id in \$(seq 0 $((total - 1))); do [ -d '${LOCK_PREFIX}'\$id ] && echo \$id; done")
+
     locked=0
     id=0
     while [ "$id" -lt "$total" ]; do
-      lockfile="${LOCK_PREFIX}${id}"
-      if [ -d "$lockfile" ]; then
+      if echo "$locked_ids" | grep -qx "$id"; then
         echo "  GPU $id: LOCKED"
         locked=$((locked + 1))
       else
