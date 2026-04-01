@@ -7,6 +7,37 @@ Gridengine GPU prolog
 
 ---
 
+v1.2 — Remote host support & diagnostic improvements
+-----------------------------------------------------
+
+### Problem
+
+1. `reserve-gpu.sh` only operated on the local host — the optional `hostname`
+   parameter affected SGE resources (via `qconf`) but not lock files or
+   `nvidia-smi` queries, silently producing wrong results for remote nodes.
+2. When GPU allocation failed, users had no way to tell *why* a job was
+   rescheduled from `qstat` output alone.
+3. The `status` command produced false warnings when SGE jobs were running,
+   because it counted all lock files equally without distinguishing manual
+   locks from SGE job locks.
+
+### Changes
+
+1. **Remote host operations via SSH** — `reserve-gpu.sh` now routes lock file
+   and `nvidia-smi` commands through SSH when the target host differs from the
+   local machine. Connectivity is verified before any operation.
+2. **Job context diagnostic** — on GPU allocation failure, `prolog.sh` writes
+   the reschedule reason to the job context (`qalter -ac`), visible in
+   `qstat -j` output.
+3. **Smart lock classification** — `status` command distinguishes manual locks
+   from SGE job locks by cross-referencing the SGE gpu resource value, only
+   warning when the counts are genuinely inconsistent.
+4. **Bug fixes** — correct shebang (`#!/bin/bash` for `local` keyword),
+   fix positional argument parsing for `status` subcommand, sanitize SSH
+   output to prevent arithmetic errors.
+
+---
+
 v1.1 — Memory-aware selection & GPU reservation
 ------------------------------------------------
 

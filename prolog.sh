@@ -52,6 +52,8 @@ done
 if [ $i -lt $NGPUS ]
 then
   echo "ERROR: Only reserved $i of $NGPUS requested devices."
+  # Write diagnostic info to job context (visible via qstat -j, field "context")
+  qalter -ac gpu_prolog="[$(date '+%Y-%m-%d %H:%M')] $i/$NGPUS GPUs available, exit 99 (auto reschedule)" $JOB_ID 2>/dev/null
   for device_id in $SGE_GPU; do
     rmdir /tmp/lock-gpu$device_id
   done
