@@ -7,6 +7,53 @@ Gridengine GPU prolog
 
 ---
 
+v1.3 — Docker container cleanup on job termination
+---------------------------------------------------
+
+### Problem
+
+When users run Docker containers inside SGE jobs, killing the job with
+`qdel` only terminates the `docker run` client process. The container
+itself keeps running because its process is managed by the Docker daemon
+(`dockerd`), which lives outside the SGE process group. Over time this
+leads to orphaned containers consuming GPU memory and compute resources.
+
+### Approach
+
+A two-part solution based on container labeling:
+
+1. **docker-wrapper.sh** — a thin wrapper placed at `/usr/local/bin/docker`
+   (which takes precedence over `/usr/bin/docker` in `PATH`). When it
+   detects an SGE job environment (`$JOB_ID` is set) and the subcommand is
+   `run` or `create`, it injects `--label sge_job_id=$JOB_ID` before
+   delegating to the real Docker binary. All other invocations pass through
+   unmodified.
+2. **epilog.sh cleanup** — after releasing GPU locks, the epilog queries
+   `docker ps --filter label=sge_job_id=$JOB_ID` and stops every matching
+   container. The epilog uses the absolute path `/usr/bin/docker` so it
+   never invokes the wrapper.
+
+### Installation
+
+On each compute node:
+
+    cp docker-wrapper.sh /usr/local/bin/docker
+    chmod +x /usr/local/bin/docker
+
+Verify that `/usr/local/bin` appears before `/usr/bin` in `PATH`:
+
+    which docker   # should print /usr/local/bin/docker
+
+### Limitations
+
+- **docker compose** — Compose may call the Docker binary via its own
+  path resolution and bypass the wrapper. Containers started this way
+  will not be labeled or cleaned up.
+- **Absolute path invocation** — if a script calls `/usr/bin/docker`
+  directly, the wrapper is bypassed and no label is injected.
+
+---
+
 v1.2 — Remote host support & diagnostic improvements
 -----------------------------------------------------
 
