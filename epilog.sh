@@ -24,4 +24,15 @@ do
     rmdir $lockfile
   fi
 done
+
+# Clean up Docker containers started by this job.
+# The sge-docker.sh profile script automatically labels containers with
+# sge_job_id when run inside an SGE job, enabling reliable cleanup.
+containers=$(/usr/bin/docker ps -q --filter "label=sge_job_id=$JOB_ID" 2>/dev/null)
+if [ -n "$containers" ]; then
+  for cid in $containers; do
+    /usr/bin/docker stop "$cid" 2>/dev/null
+  done
+fi
+
 exit 0

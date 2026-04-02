@@ -7,6 +7,52 @@ Gridengine GPU prolog
 
 ---
 
+v1.3 — Docker container cleanup on job termination
+---------------------------------------------------
+
+### Problem
+
+When users run Docker containers inside SGE jobs, `qdel` only kills the
+`docker run` client process. The container itself keeps running because the
+container process is managed by the Docker daemon (`dockerd`), which lives
+outside the SGE process group. Orphaned containers accumulate on compute
+nodes, consuming GPU memory and other resources.
+
+### Approach
+
+1. **Shell function injection** — A shell function named `docker` is installed
+   via `/etc/profile.d/sge-docker.sh`. Because shell functions take priority
+   over PATH lookups, every `docker run` and `docker create` invocation is
+   transparently intercepted. When `$JOB_ID` is set (i.e. inside an SGE job),
+   the function injects `--label sge_job_id=$JOB_ID` before forwarding to the
+   real `docker` binary. All other docker subcommands pass through unchanged.
+2. **BASH_ENV for non-login shells** — `prolog.sh` writes
+   `BASH_ENV=/etc/profile.d/sge-docker.sh` into the job environment file so
+   that `#!/bin/bash` scripts (which do not read `/etc/profile.d/`) still load
+   the function.
+3. **Epilog cleanup** — `epilog.sh` queries `docker ps --filter label=sge_job_id=$JOB_ID`
+   and stops any matching containers.
+
+### Installation
+
+Deploy `sge-docker.sh` to every compute node:
+
+    sudo cp sge-docker.sh /etc/profile.d/sge-docker.sh
+
+No changes are needed to `qconf` or queue configuration.
+
+### Coverage
+
+| Shell / method              | Function loaded? | Notes                                      |
+|-----------------------------|------------------|--------------------------------------------|
+| `#!/bin/bash` (login)       | Yes              | `/etc/profile.d/` sourced by login shells  |
+| `#!/bin/bash` (non-login)   | Yes              | Loaded via `BASH_ENV`                      |
+| `#!/bin/sh`                 | No               | sh does not read `BASH_ENV` or profile.d   |
+| `docker compose`            | No               | Compose calls the Docker API directly      |
+| `/usr/bin/docker` (abs path)| No               | Bypasses the shell function                |
+
+---
+
 v1.2 — Remote host support & diagnostic improvements
 -----------------------------------------------------
 
