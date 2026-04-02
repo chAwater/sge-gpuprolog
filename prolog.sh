@@ -4,10 +4,23 @@
 #
 # Kota Yamaguchi 2015 <kyamagu@vision.is.tohoku.ac.jp>
 
-# Query how many gpus to allocate.
-
 source $SGE_ROOT/$SGE_CELL/common/settings.sh
 
+# Check if the environment file is writable.
+ENV_FILE=$SGE_JOB_SPOOL_DIR/environment
+if [ ! -f $ENV_FILE -o ! -w $ENV_FILE ]
+then
+  exit 100
+fi
+
+# Set BASH_ENV so that non-login bash scripts also load the docker function.
+# This ensures the sge-docker.sh function is available regardless of
+# whether the job shell is a login shell.
+if [ -f /etc/profile.d/sge-docker.sh ]; then
+  echo "BASH_ENV=/etc/profile.d/sge-docker.sh" >> $ENV_FILE
+fi
+
+# Query how many gpus to allocate.
 NGPUS=$(qstat -j $JOB_ID | \
         sed -n "s/hard resource_list:.*gpu=\([[:digit:]]\+\).*/\1/p")
 if [ -z $NGPUS ]
@@ -19,13 +32,6 @@ then
   exit 0
 fi
 NGPUS=$(expr $NGPUS \* ${NSLOTS=1})
-
-# Check if the environment file is writable.
-ENV_FILE=$SGE_JOB_SPOOL_DIR/environment
-if [ ! -f $ENV_FILE -o ! -w $ENV_FILE ]
-then
-  exit 100
-fi
 
 # Allocate and lock GPUs.
 SGE_GPU=""
